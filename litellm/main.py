@@ -1249,6 +1249,7 @@ def completion(
                 api_key=together_ai_key,
                 logging_obj=logging,
                 custom_prompt_dict=custom_prompt_dict,
+                timeout=timeout,
             )
             if (
                 "stream_tokens" in optional_params

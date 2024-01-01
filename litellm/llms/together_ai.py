@@ -110,6 +110,7 @@ def completion(
     logging_obj,
     custom_prompt_dict={},
     optional_params=None,
+    timeout=None,
     litellm_params=None,
     logger_fn=None,
 ):
@@ -167,6 +168,7 @@ def completion(
             headers=headers,
             data=json.dumps(data),
             stream=optional_params["stream_tokens"],
+            timeout=timeout,
         )
         return response.iter_lines()
     else:
