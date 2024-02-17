@@ -5,9 +5,13 @@ import TabItem from '@theme/TabItem';
 
 https://github.com/BerriAI/litellm
 
-import QuickStart from '../src/components/QuickStart.js'
 
 ## **Call 100+ LLMs using the same Input/Output Format**
+
+- Translate inputs to provider's `completion`, `embedding`, and `image_generation` endpoints
+- [Consistent output](https://docs.litellm.ai/docs/completion/output), text responses will always be available at `['choices'][0]['message']['content']`
+- Retry/fallback logic across multiple deployments (e.g. Azure/OpenAI) - [Router](https://docs.litellm.ai/docs/routing)
+- Track spend & set budgets per project [OpenAI Proxy Server](https://docs.litellm.ai/docs/simple_proxy)
 
 ## Basic usage 
 <a target="_blank" href="https://colab.research.google.com/github/BerriAI/litellm/blob/main/cookbook/liteLLM_Getting_Started.ipynb">
@@ -157,9 +161,6 @@ response = completion(
   messages=[{ "content": "Hello, how are you?","role": "user"}],
   stream=True,
 )
-
-for chunk in response: 
-  print(chunk)
 ```
 
 </TabItem>
@@ -177,9 +178,6 @@ response = completion(
   messages=[{ "content": "Hello, how are you?","role": "user"}],
   stream=True,
 )
-
-for chunk in response: 
-  print(chunk)
 ```
 
 </TabItem>
@@ -199,9 +197,6 @@ response = completion(
   messages=[{ "content": "Hello, how are you?","role": "user"}],
   stream=True,
 )
-
-for chunk in response: 
-  print(chunk)
 ```
 
 </TabItem>
@@ -222,9 +217,7 @@ response = completion(
   stream=True,
 )
 
-
-for chunk in response: 
-  print(chunk)
+print(response)
 ```
 
 </TabItem>
@@ -246,9 +239,6 @@ response = completion(
   messages = [{ "content": "Hello, how are you?","role": "user"}],
   stream=True,
 )
-
-for chunk in response: 
-  print(chunk)
 ```
 
 </TabItem>
@@ -265,9 +255,6 @@ response = completion(
             api_base="http://localhost:11434",
             stream=True,
 )
-
-for chunk in response: 
-  print(chunk)
 ```
 </TabItem>
 <TabItem value="or" label="Openrouter">
@@ -284,9 +271,6 @@ response = completion(
   messages = [{ "content": "Hello, how are you?","role": "user"}],
   stream=True,
 )
-
-for chunk in response: 
-  print(chunk)
 ```
 </TabItem>
 
@@ -327,34 +311,8 @@ litellm.success_callback = ["langfuse", "llmonitor"] # log input/output to langf
 response = completion(model="gpt-3.5-turbo", messages=[{"role": "user", "content": "Hi 👋 - i'm openai"}])
 ```
 
-## Calculate Costs, Usage, Latency
-
-Pass the completion response to `litellm.completion_cost(completion_response=response)` and get the cost
-
-```python
-from litellm import completion, completion_cost
-import os
-os.environ["OPENAI_API_KEY"] = "your-api-key"
-
-response = completion(
-  model="gpt-3.5-turbo", 
-  messages=[{ "content": "Hello, how are you?","role": "user"}]
-)
-
-cost = completion_cost(completion_response=response)
-print("Cost for completion call with gpt-3.5-turbo: ", f"${float(cost):.10f}")
-```
-
-**Output**
-```shell
-Cost for completion call with gpt-3.5-turbo:  $0.0000775000
-```
-
-### Track Costs, Usage, Latency for streaming
-We use a custom callback function for this - more info on custom callbacks: https://docs.litellm.ai/docs/observability/custom_callback
-- We define a callback function to calculate cost `def track_cost_callback()`
-- In `def track_cost_callback()` we check if the stream is complete - `if "complete_streaming_response" in kwargs`
-- Use `litellm.completion_cost()` to calculate cost, once the stream is complete
+## Track Costs, Usage, Latency for streaming
+Use a callback function for this - more info on custom callbacks: https://docs.litellm.ai/docs/observability/custom_callback
 
 ```python
 import litellm
@@ -366,18 +324,8 @@ def track_cost_callback(
     start_time, end_time    # start/end time
 ):
     try:
-        # check if it has collected an entire stream response
-        if "complete_streaming_response" in kwargs:
-            # for tracking streaming cost we pass the "messages" and the output_text to litellm.completion_cost 
-            completion_response=kwargs["complete_streaming_response"]
-            input_text = kwargs["messages"]
-            output_text = completion_response["choices"][0]["message"]["content"]
-            response_cost = litellm.completion_cost(
-                model = kwargs["model"],
-                messages = input_text,
-                completion=output_text
-            )
-            print("streaming response_cost", response_cost)
+      response_cost = kwargs.get("response_cost", 0)
+      print("streaming response_cost", response_cost)
     except:
         pass
 # set callback 
@@ -396,7 +344,49 @@ response = completion(
 )
 ```
 
+## OpenAI Proxy
+
+Track spend across multiple projects/people 
+
+![ui_3](https://github.com/BerriAI/litellm/assets/29436595/47c97d5e-b9be-4839-b28c-43d7f4f10033)
+
+The proxy provides: 
+1. [Hooks for auth](https://docs.litellm.ai/docs/proxy/virtual_keys#custom-auth)
+2. [Hooks for logging](https://docs.litellm.ai/docs/proxy/logging#step-1---create-your-custom-litellm-callback-class)
+3. [Cost tracking](https://docs.litellm.ai/docs/proxy/virtual_keys#tracking-spend)
+4. [Rate Limiting](https://docs.litellm.ai/docs/proxy/users#set-rate-limits)
+
+### 📖 Proxy Endpoints - [Swagger Docs](https://litellm-api.up.railway.app/)
+
+### Quick Start Proxy - CLI 
+
+```shell
+pip install 'litellm[proxy]'
+```
+
+#### Step 1: Start litellm proxy
+```shell
+$ litellm --model huggingface/bigcode/starcoder
+
+#INFO: Proxy running on http://0.0.0.0:8000
+```
+
+#### Step 2: Make ChatCompletions Request to Proxy
+```python
+import openai # openai v1.0.0+
+client = openai.OpenAI(api_key="anything",base_url="http://0.0.0.0:8000") # set proxy to base_url
+# request sent to model set on litellm proxy, `litellm --model`
+response = client.chat.completions.create(model="gpt-3.5-turbo", messages = [
+    {
+        "role": "user",
+        "content": "this is a test request, write a short poem"
+    }
+])
+
+print(response)
+```
+
 ## More details
 * [exception mapping](./exception_mapping.md)
 * [retries + model fallbacks for completion()](./completion/reliable_completions.md)
-* [tutorial for model fallbacks with completion()](./tutorials/fallbacks.md)
+* [proxy virtual keys & spend management](./tutorials/fallbacks.md)

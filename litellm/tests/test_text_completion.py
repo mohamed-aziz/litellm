@@ -2682,7 +2682,7 @@ def test_completion_openai_prompt():
     try:
         print("\n text 003 test\n")
         response = text_completion(
-            model="text-davinci-003", prompt="What's the weather in SF?"
+            model="gpt-3.5-turbo-instruct", prompt="What's the weather in SF?"
         )
         print(response)
         response_str = response["choices"][0]["text"]
@@ -2700,7 +2700,7 @@ def test_completion_openai_engine_and_model():
         print("\n text 003 test\n")
         litellm.set_verbose = True
         response = text_completion(
-            model="text-davinci-003",
+            model="gpt-3.5-turbo-instruct",
             engine="anything",
             prompt="What's the weather in SF?",
             max_tokens=5,
@@ -2721,7 +2721,9 @@ def test_completion_openai_engine():
         print("\n text 003 test\n")
         litellm.set_verbose = True
         response = text_completion(
-            engine="text-davinci-003", prompt="What's the weather in SF?", max_tokens=5
+            engine="gpt-3.5-turbo-instruct",
+            prompt="What's the weather in SF?",
+            max_tokens=5,
         )
         print(response)
         response_str = response["choices"][0]["text"]
@@ -2754,14 +2756,13 @@ def test_completion_chatgpt_prompt():
 
 def test_text_completion_basic():
     try:
-        print("\n test 003 with echo and logprobs \n")
+        print("\n test 003 with logprobs \n")
         litellm.set_verbose = False
         response = text_completion(
-            model="text-davinci-003",
+            model="gpt-3.5-turbo-instruct",
             prompt="good morning",
             max_tokens=10,
             logprobs=10,
-            echo=True,
         )
         print(response)
         print(response.choices)
@@ -2779,7 +2780,7 @@ def test_completion_text_003_prompt_array():
     try:
         litellm.set_verbose = False
         response = text_completion(
-            model="text-davinci-003",
+            model="gpt-3.5-turbo-instruct",
             prompt=token_prompt,  # token prompt is a 2d list
         )
         print("\n\n response")
@@ -2832,6 +2833,9 @@ def test_completion_hf_prompt_array():
         assert len(response.choices) == 2
         # response_str = response["choices"][0]["text"]
     except Exception as e:
+        print(str(e))
+        if "is currently loading" in str(e):
+            return
         pytest.fail(f"Error occurred: {e}")
 
 
@@ -2857,7 +2861,7 @@ def test_text_completion_stream():
 # async def test_text_completion_async_stream():
 #     try:
 #         response = await atext_completion(
-#                 model="text-completion-openai/text-davinci-003",
+#                 model="text-completion-openai/gpt-3.5-turbo-instruct",
 #                 prompt="good morning",
 #                 stream=True,
 #                 max_tokens=10,
@@ -2936,18 +2940,21 @@ async def test_async_text_completion_chat_model_stream():
             stream=True,
             max_tokens=10,
         )
-        print(f"response: {response}")
 
         num_finish_reason = 0
+        chunks = []
         async for chunk in response:
             print(chunk)
+            chunks.append(chunk)
             if chunk["choices"][0].get("finish_reason") is not None:
                 num_finish_reason += 1
-                print("finish_reason", chunk["choices"][0].get("finish_reason"))
 
         assert (
             num_finish_reason == 1
         ), f"expected only one finish reason. Got {num_finish_reason}"
+        response_obj = litellm.stream_chunk_builder(chunks=chunks)
+        cost = litellm.completion_cost(completion_response=response_obj)
+        assert cost > 0
     except Exception as e:
         pytest.fail(f"GOT exception for gpt-3.5 In streaming{e}")
 

@@ -3,6 +3,7 @@
 import sys, os, time, inspect, asyncio, traceback
 from datetime import datetime
 import pytest
+from pydantic import BaseModel
 
 sys.path.insert(0, os.path.abspath("../.."))
 from typing import Optional, Literal, List, Union
@@ -74,6 +75,7 @@ class CompletionCustomHandler(
 
     def log_post_api_call(self, kwargs, response_obj, start_time, end_time):
         try:
+            print(f"kwargs: {kwargs}")
             self.states.append("post_api_call")
             ## START TIME
             assert isinstance(start_time, datetime)
@@ -93,7 +95,8 @@ class CompletionCustomHandler(
             assert isinstance(kwargs["api_key"], (str, type(None)))
             assert (
                 isinstance(
-                    kwargs["original_response"], (str, litellm.CustomStreamWrapper)
+                    kwargs["original_response"],
+                    (str, litellm.CustomStreamWrapper, BaseModel),
                 )
                 or inspect.iscoroutine(kwargs["original_response"])
                 or inspect.isasyncgen(kwargs["original_response"])
@@ -149,7 +152,14 @@ class CompletionCustomHandler(
             ## END TIME
             assert isinstance(end_time, datetime)
             ## RESPONSE OBJECT
-            assert isinstance(response_obj, litellm.ModelResponse)
+            assert isinstance(
+                response_obj,
+                (
+                    litellm.ModelResponse,
+                    litellm.EmbeddingResponse,
+                    litellm.ImageResponse,
+                ),
+            )
             ## KWARGS
             assert isinstance(kwargs["model"], str)
             assert isinstance(kwargs["messages"], list) and isinstance(
@@ -166,16 +176,19 @@ class CompletionCustomHandler(
             ) or isinstance(kwargs["input"], (dict, str))
             assert isinstance(kwargs["api_key"], (str, type(None)))
             assert isinstance(
-                kwargs["original_response"], (str, litellm.CustomStreamWrapper)
+                kwargs["original_response"],
+                (str, litellm.CustomStreamWrapper, BaseModel),
             )
             assert isinstance(kwargs["additional_args"], (dict, type(None)))
             assert isinstance(kwargs["log_event_type"], str)
+            assert isinstance(kwargs["response_cost"], (float, type(None)))
         except:
             print(f"Assertion Error: {traceback.format_exc()}")
             self.errors.append(traceback.format_exc())
 
     def log_failure_event(self, kwargs, response_obj, start_time, end_time):
         try:
+            print(f"kwargs: {kwargs}")
             self.states.append("sync_failure")
             ## START TIME
             assert isinstance(start_time, datetime)
@@ -262,6 +275,7 @@ class CompletionCustomHandler(
             assert isinstance(kwargs["additional_args"], (dict, type(None)))
             assert isinstance(kwargs["log_event_type"], str)
             assert kwargs["cache_hit"] is None or isinstance(kwargs["cache_hit"], bool)
+            assert isinstance(kwargs["response_cost"], (float, type(None)))
         except:
             print(f"Assertion Error: {traceback.format_exc()}")
             self.errors.append(traceback.format_exc())
@@ -460,7 +474,7 @@ async def test_async_chat_azure_stream():
         pytest.fail(f"An exception occurred: {str(e)}")
 
 
-asyncio.run(test_async_chat_azure_stream())
+# asyncio.run(test_async_chat_azure_stream())
 
 
 ## Test Bedrock + sync
@@ -544,6 +558,88 @@ async def test_async_chat_bedrock_stream():
 
 
 # asyncio.run(test_async_chat_bedrock_stream())
+
+
+## Test Sagemaker + Async
+@pytest.mark.asyncio
+async def test_async_chat_sagemaker_stream():
+    try:
+        customHandler = CompletionCustomHandler()
+        litellm.callbacks = [customHandler]
+        response = await litellm.acompletion(
+            model="sagemaker/berri-benchmarking-Llama-2-70b-chat-hf-4",
+            messages=[{"role": "user", "content": "Hi 👋 - i'm async sagemaker"}],
+        )
+        # test streaming
+        response = await litellm.acompletion(
+            model="sagemaker/berri-benchmarking-Llama-2-70b-chat-hf-4",
+            messages=[{"role": "user", "content": "Hi 👋 - i'm async sagemaker"}],
+            stream=True,
+        )
+        print(f"response: {response}")
+        async for chunk in response:
+            print(f"chunk: {chunk}")
+            continue
+        ## test failure callback
+        try:
+            response = await litellm.acompletion(
+                model="sagemaker/berri-benchmarking-Llama-2-70b-chat-hf-4",
+                messages=[{"role": "user", "content": "Hi 👋 - i'm async sagemaker"}],
+                aws_region_name="my-bad-key",
+                stream=True,
+            )
+            async for chunk in response:
+                continue
+        except:
+            pass
+        time.sleep(1)
+        print(f"customHandler.errors: {customHandler.errors}")
+        assert len(customHandler.errors) == 0
+        litellm.callbacks = []
+    except Exception as e:
+        pytest.fail(f"An exception occurred: {str(e)}")
+
+
+# Text Completion
+
+
+## Test OpenAI text completion + Async
+@pytest.mark.asyncio
+async def test_async_text_completion_openai_stream():
+    try:
+        customHandler = CompletionCustomHandler()
+        litellm.callbacks = [customHandler]
+        response = await litellm.atext_completion(
+            model="gpt-3.5-turbo",
+            prompt="Hi 👋 - i'm async text completion openai",
+        )
+        # test streaming
+        response = await litellm.atext_completion(
+            model="gpt-3.5-turbo",
+            prompt="Hi 👋 - i'm async text completion openai",
+            stream=True,
+        )
+        async for chunk in response:
+            print(f"chunk: {chunk}")
+            continue
+        ## test failure callback
+        try:
+            response = await litellm.atext_completion(
+                model="gpt-3.5-turbo",
+                prompt="Hi 👋 - i'm async text completion openai",
+                stream=True,
+                api_key="my-bad-key",
+            )
+            async for chunk in response:
+                continue
+        except:
+            pass
+        time.sleep(1)
+        print(f"customHandler.errors: {customHandler.errors}")
+        assert len(customHandler.errors) == 0
+        litellm.callbacks = []
+    except Exception as e:
+        pytest.fail(f"An exception occurred: {str(e)}")
 
 
 # EMBEDDING
@@ -632,7 +728,7 @@ async def test_async_embedding_bedrock():
         response = await litellm.aembedding(
             model="bedrock/cohere.embed-multilingual-v3",
             input=["good morning from litellm"],
-            aws_region_name="os.environ/AWS_REGION_NAME_2",
+            aws_region_name="us-east-1",
         )
         await asyncio.sleep(1)
         print(f"customHandler_success.errors: {customHandler_success.errors}")
@@ -665,6 +761,7 @@ async def test_async_embedding_bedrock():
 ## Test Azure - completion, embedding
 @pytest.mark.asyncio
 async def test_async_completion_azure_caching():
+    litellm.set_verbose = True
     customHandler_caching = CompletionCustomHandler()
     litellm.cache = Cache(
         type="redis",
@@ -676,14 +773,18 @@ async def test_async_completion_azure_caching():
     unique_time = time.time()
     response1 = await litellm.acompletion(
         model="azure/chatgpt-v-2",
-        messages=[{"role": "user", "content": f"Hi 👋 - i'm async azure {unique_time}"}],
+        messages=[
+            {"role": "user", "content": f"Hi 👋 - i'm async azure {unique_time}"}
+        ],
         caching=True,
     )
     await asyncio.sleep(1)
     print(f"customHandler_caching.states pre-cache hit: {customHandler_caching.states}")
     response2 = await litellm.acompletion(
         model="azure/chatgpt-v-2",
-        messages=[{"role": "user", "content": f"Hi 👋 - i'm async azure {unique_time}"}],
+        messages=[
+            {"role": "user", "content": f"Hi 👋 - i'm async azure {unique_time}"}
+        ],
         caching=True,
     )
     await asyncio.sleep(1)  # success callbacks are done in parallel
@@ -719,10 +820,63 @@ async def test_async_embedding_azure_caching():
     )
     await asyncio.sleep(1)  # success callbacks are done in parallel
     print(customHandler_caching.states)
+    print(customHandler_caching.errors)
     assert len(customHandler_caching.errors) == 0
     assert len(customHandler_caching.states) == 4  # pre, post, success, success
 
 
-# asyncio.run(
-#     test_async_embedding_azure_caching()
-# )
+# Image Generation
+
+
+## Test OpenAI + Sync
+def test_image_generation_openai():
+    try:
+        customHandler_success = CompletionCustomHandler()
+        customHandler_failure = CompletionCustomHandler()
+        litellm.callbacks = [customHandler_success]
+
+        litellm.set_verbose = True
+
+        response = litellm.image_generation(
+            prompt="A cute baby sea otter",
+            model="azure/",
+            api_base=os.getenv("AZURE_API_BASE"),
+            api_key=os.getenv("AZURE_API_KEY"),
+            api_version="2023-06-01-preview",
+        )
+
+        print(f"response: {response}")
+        assert len(response.data) > 0
+
+        print(f"customHandler_success.errors: {customHandler_success.errors}")
+        print(f"customHandler_success.states: {customHandler_success.states}")
+        assert len(customHandler_success.errors) == 0
+        assert len(customHandler_success.states) == 3  # pre, post, success
+        # test failure callback
+        litellm.callbacks = [customHandler_failure]
+        try:
+            response = litellm.image_generation(
+                prompt="A cute baby sea otter",
+                model="dall-e-2",
+                api_key="my-bad-api-key",
+            )
+        except:
+            pass
+        print(f"customHandler_failure.errors: {customHandler_failure.errors}")
+        print(f"customHandler_failure.states: {customHandler_failure.states}")
+        assert len(customHandler_failure.errors) == 0
+        assert len(customHandler_failure.states) == 3  # pre, post, failure
+    except litellm.RateLimitError as e:
+        pass
+    except litellm.ContentPolicyViolationError:
+        pass  # OpenAI randomly raises these errors - skip when they occur
+    except Exception as e:
+        pytest.fail(f"An exception occurred - {str(e)}")
+
+
+# test_image_generation_openai()
+## Test OpenAI + Async
+
+## Test Azure + Sync
+
+## Test Azure + Async

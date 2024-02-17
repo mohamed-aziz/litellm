@@ -1,9 +1,23 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 # Caching 
 Cache LLM Responses
 
-## Quick Start
+LiteLLM supports:
+- In Memory Cache
+- Redis Cache 
+- Redis Semantic Cache
+- s3 Bucket Cache 
+
+## Quick Start - Redis, s3 Cache, Semantic Cache
+<Tabs>
+
+<TabItem value="redis" label="redis cache">
+
 Caching can be enabled by adding the `cache` key in the `config.yaml`
-### Step 1: Add `cache` to the config.yaml
+
+#### Step 1: Add `cache` to the config.yaml
 ```yaml
 model_list:
   - model_name: gpt-3.5-turbo
@@ -18,7 +32,7 @@ litellm_settings:
   cache: True          # set cache responses to True, litellm defaults to using a redis cache
 ```
 
-### Step 2: Add Redis Credentials to .env
+#### Step 2: Add Redis Credentials to .env
 Set either `REDIS_URL` or the `REDIS_HOST` in your os environment, to enable caching.
 
   ```shell
@@ -36,12 +50,99 @@ REDIS_<redis-kwarg-name> = ""
 ``` 
 
 [**See how it's read from the environment**](https://github.com/BerriAI/litellm/blob/4d7ff1b33b9991dcf38d821266290631d9bcd2dd/litellm/_redis.py#L40)
-### Step 3: Run proxy with config
+#### Step 3: Run proxy with config
 ```shell
 $ litellm --config /path/to/config.yaml
 ```
+</TabItem>
+
+<TabItem value="s3" label="s3 cache">
+
+#### Step 1: Add `cache` to the config.yaml
+```yaml
+model_list:
+  - model_name: gpt-3.5-turbo
+    litellm_params:
+      model: gpt-3.5-turbo
+  - model_name: text-embedding-ada-002
+    litellm_params:
+      model: text-embedding-ada-002
+
+litellm_settings:
+  set_verbose: True
+  cache: True          # set cache responses to True
+  cache_params:        # set cache params for s3
+    type: s3
+    s3_bucket_name: cache-bucket-litellm   # AWS Bucket Name for S3
+    s3_region_name: us-west-2              # AWS Region Name for S3
+    s3_aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID  # us os.environ/<variable name> to pass environment variables. This is AWS Access Key ID for S3
+    s3_aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY  # AWS Secret Access Key for S3
+    s3_endpoint_url: https://s3.amazonaws.com  # [OPTIONAL] S3 endpoint URL, if you want to use Backblaze/cloudflare s3 buckets
+```
+
+#### Step 2: Run proxy with config
+```shell
+$ litellm --config /path/to/config.yaml
+```
+</TabItem>
+
+
+<TabItem value="redis-sem" label="redis semantic cache">
+
+Caching can be enabled by adding the `cache` key in the `config.yaml`
+
+#### Step 1: Add `cache` to the config.yaml
+```yaml
+model_list:
+  - model_name: gpt-3.5-turbo
+    litellm_params:
+      model: gpt-3.5-turbo
+  - model_name: azure-embedding-model
+    litellm_params:
+      model: azure/azure-embedding-model
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      api_version: "2023-07-01-preview"
+
+litellm_settings:
+  set_verbose: True
+  cache: True          # set cache responses to True, litellm defaults to using a redis cache
+  cache_params:
+    type: "redis-semantic"  
+    similarity_threshold: 0.8   # similarity threshold for semantic cache
+    redis_semantic_cache_embedding_model: azure-embedding-model # set this to a model_name set in model_list
+```
+
+#### Step 2: Add Redis Credentials to .env
+Set either `REDIS_URL` or the `REDIS_HOST` in your os environment, to enable caching.
+
+  ```shell
+  REDIS_URL = ""        # REDIS_URL='redis://username:password@hostname:port/database'
+  ## OR ## 
+  REDIS_HOST = ""       # REDIS_HOST='redis-18841.c274.us-east-1-3.ec2.cloud.redislabs.com'
+  REDIS_PORT = ""       # REDIS_PORT='18841'
+  REDIS_PASSWORD = ""   # REDIS_PASSWORD='liteLlmIsAmazing'
+  ```
+
+**Additional kwargs**  
+You can pass in any additional redis.Redis arg, by storing the variable + value in your os environment, like this: 
+```shell
+REDIS_<redis-kwarg-name> = ""
+``` 
+
+#### Step 3: Run proxy with config
+```shell
+$ litellm --config /path/to/config.yaml
+```
+</TabItem>
+</Tabs>
+
 
 ## Using Caching - /chat/completions
+
+<Tabs>
+<TabItem value="chat_completions" label="/chat/completions">
+
 Send the same request twice:
 ```shell
 curl http://0.0.0.0:8000/v1/chat/completions \
@@ -60,8 +161,9 @@ curl http://0.0.0.0:8000/v1/chat/completions \
      "temperature": 0.7
    }'
 ```
+</TabItem>
+<TabItem value="embeddings" label="/embeddings">
 
-## Using Caching - /embeddings
 Send the same request twice:
 ```shell
 curl --location 'http://0.0.0.0:8000/embeddings' \
@@ -78,6 +180,8 @@ curl --location 'http://0.0.0.0:8000/embeddings' \
   "input": ["write a litellm poem"]
   }'
 ```
+</TabItem>
+</Tabs>
 
 ## Advanced
 ### Set Cache Params on config.yaml
@@ -103,78 +207,122 @@ litellm_settings:
     supported_call_types: ["acompletion", "completion", "embedding", "aembedding"] # defaults to all litellm call types
 ```
 
-### Cache-Controls on requests 
+### Turn on / off caching per request.  
 
-Set ttl per request by passing Cache-Controls. The proxy currently supports just `s-maxage`. 
+The proxy support 3 cache-controls:
 
-Comment on this issue if you need additional cache controls - https://github.com/BerriAI/litellm/issues/1218
+- `ttl`: *Optional(int)* - Will cache the response for the user-defined amount of time (in seconds).
+- `s-maxage`: *Optional(int)* Will only accept cached responses that are within user-defined range (in seconds).
+- `no-cache`: *Optional(bool)* Will not return a cached response, but instead call the actual endpoint. 
+- `no-store`: *Optional(bool)* Will not cache the response. 
 
-```javascript
-const { OpenAI } = require('openai');
+[Let us know if you need more](https://github.com/BerriAI/litellm/issues/1218)
 
-const openai = new OpenAI({
-  apiKey: "sk-1234", // This is the default and can be omitted
-  baseURL: "http://0.0.0.0:8000"
-});
+**Turn off caching**
 
-async function main() {
-  const chatCompletion = await openai.chat.completions.create({
-    messages: [{ role: 'user', content: 'Say this is a test' }],
-    model: 'gpt-3.5-turbo',
-  }, {"headers": {
-    "Cache-Control": "s-maxage=0" // 👈 sets ttl=0
-  }});
-}
+```python
+import os
+from openai import OpenAI
 
-main();
+client = OpenAI(
+    # This is the default and can be omitted
+    api_key=os.environ.get("OPENAI_API_KEY"),
+		base_url="http://0.0.0.0:8000"
+)
+
+chat_completion = client.chat.completions.create(
+    messages=[
+        {
+            "role": "user",
+            "content": "Say this is a test",
+        }
+    ],
+    model="gpt-3.5-turbo",
+    cache={
+			"no-cache": True # will not return a cached response 
+		}
+)
 ```
 
-### Override caching per `chat/completions` request
-Caching can be switched on/off per `/chat/completions` request
-- Caching **on** for individual completion - pass `caching=True`:
-  ```shell
-  curl http://0.0.0.0:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-     "model": "gpt-3.5-turbo",
-     "messages": [{"role": "user", "content": "write a poem about litellm!"}],
-     "temperature": 0.7,
-     "caching": true
-   }'
-  ```
-- Caching **off** for individual completion - pass `caching=False`:
-  ```shell
-  curl http://0.0.0.0:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-     "model": "gpt-3.5-turbo",
-     "messages": [{"role": "user", "content": "write a poem about litellm!"}],
-     "temperature": 0.7,
-     "caching": false
-   }'
-  ```
+**Turn on caching**
 
+```python
+import os
+from openai import OpenAI
 
-### Override caching per `/embeddings` request
+client = OpenAI(
+    # This is the default and can be omitted
+    api_key=os.environ.get("OPENAI_API_KEY"),
+		base_url="http://0.0.0.0:8000"
+)
 
-Caching can be switched on/off per `/embeddings` request
-- Caching **on** for embedding - pass `caching=True`:
-  ```shell
-  curl --location 'http://0.0.0.0:8000/embeddings' \
-    --header 'Content-Type: application/json' \
-    --data ' {
-    "model": "text-embedding-ada-002",
-    "input": ["write a litellm poem"],
-    "caching": true
-    }'
-  ```
-- Caching **off** for completion - pass `caching=False`:
-  ```shell
-    curl --location 'http://0.0.0.0:8000/embeddings' \
-    --header 'Content-Type: application/json' \
-    --data ' {
-    "model": "text-embedding-ada-002",
-    "input": ["write a litellm poem"],
-    "caching": false
-    }'
-  ```
+chat_completion = client.chat.completions.create(
+    messages=[
+        {
+            "role": "user",
+            "content": "Say this is a test",
+        }
+    ],
+    model="gpt-3.5-turbo",
+    cache={
+			"ttl": 600 # caches response for 10 minutes 
+		}
+)
+```
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    # This is the default and can be omitted
+    api_key=os.environ.get("OPENAI_API_KEY"),
+		base_url="http://0.0.0.0:8000"
+)
+
+chat_completion = client.chat.completions.create(
+    messages=[
+        {
+            "role": "user",
+            "content": "Say this is a test",
+        }
+    ],
+    model="gpt-3.5-turbo",
+    cache={
+			"s-maxage": 600 # only get responses cached within last 10 minutes 
+		}
+)
+```
+
+## Supported `cache_params`
+
+```yaml
+cache_params:
+  # Type of cache (options: "local", "redis", "s3")
+  type: s3
+
+  # List of litellm call types to cache for
+  # Options: "completion", "acompletion", "embedding", "aembedding"
+  supported_call_types:
+    - completion
+    - acompletion
+    - embedding
+    - aembedding
+
+  # Redis cache parameters
+  host: localhost  # Redis server hostname or IP address
+  port: "6379"  # Redis server port (as a string)
+  password: secret_password  # Redis server password
+
+  # S3 cache parameters
+  s3_bucket_name: your_s3_bucket_name  # Name of the S3 bucket
+  s3_region_name: us-west-2  # AWS region of the S3 bucket
+  s3_api_version: 2006-03-01  # AWS S3 API version
+  s3_use_ssl: true  # Use SSL for S3 connections (options: true, false)
+  s3_verify: true  # SSL certificate verification for S3 connections (options: true, false)
+  s3_endpoint_url: https://s3.amazonaws.com  # S3 endpoint URL
+  s3_aws_access_key_id: your_access_key  # AWS Access Key ID for S3
+  s3_aws_secret_access_key: your_secret_key  # AWS Secret Access Key for S3
+  s3_aws_session_token: your_session_token  # AWS Session Token for temporary credentials
+
+```

@@ -95,11 +95,11 @@ def test_vertex_ai():
         + litellm.vertex_code_text_models
     )
     litellm.set_verbose = False
-    litellm.vertex_project = "reliablekeys"
+    vertex_ai_project = "reliablekeys"
+    # litellm.vertex_project = "reliablekeys"
 
     test_models = random.sample(test_models, 1)
-    # test_models += litellm.vertex_language_models  # always test gemini-pro
-    test_models = litellm.vertex_language_models  # always test gemini-pro
+    test_models += litellm.vertex_language_models  # always test gemini-pro
     for model in test_models:
         try:
             if model in [
@@ -117,11 +117,16 @@ def test_vertex_ai():
                 model=model,
                 messages=[{"role": "user", "content": "hi"}],
                 temperature=0.7,
+                vertex_ai_project=vertex_ai_project,
             )
             print("\nModel Response", response)
             print(response)
             assert type(response.choices[0].message.content) == str
             assert len(response.choices[0].message.content) > 1
+            print(
+                f"response.choices[0].finish_reason: {response.choices[0].finish_reason}"
+            )
+            assert response.choices[0].finish_reason in litellm._openai_finish_reasons
         except Exception as e:
             pytest.fail(f"Error occurred: {e}")
 
@@ -261,6 +266,8 @@ async def test_async_vertexai_streaming_response():
                 complete_response += chunk.choices[0].delta.content
             print(f"complete_response: {complete_response}")
             assert len(complete_response) > 0
+        except litellm.RateLimitError as e:
+            pass
         except litellm.Timeout as e:
             pass
         except Exception as e:
@@ -275,7 +282,7 @@ def test_gemini_pro_vision():
     try:
         load_vertex_ai_credentials()
         litellm.set_verbose = True
-        litellm.num_retries = 0
+        litellm.num_retries = 3
         resp = litellm.completion(
             model="vertex_ai/gemini-pro-vision",
             messages=[
@@ -302,10 +309,10 @@ def test_gemini_pro_vision():
         assert prompt_tokens == 263  # the gemini api returns 263 to us
 
     except Exception as e:
-        import traceback
-
-        traceback.print_exc()
-        raise e
+        if "500 Internal error encountered.'" in str(e):
+            pass
+        else:
+            pytest.fail(f"An exception occurred - {str(e)}")
 
 
 # test_gemini_pro_vision()
@@ -372,7 +379,7 @@ async def gemini_pro_async_function_calling():
     print(f"completion: {completion}")
 
 
-asyncio.run(gemini_pro_async_function_calling())
+# asyncio.run(gemini_pro_async_function_calling())
 
 # Extra gemini Vision tests for completion + stream, async, async + stream
 # if we run into issues with gemini, we will also add these to our ci/cd pipeline

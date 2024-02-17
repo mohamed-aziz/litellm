@@ -10,7 +10,7 @@ sys.path.insert(
     0, os.path.abspath("../..")
 )  # Adds the parent directory to the system path
 import litellm
-from litellm import embedding, completion
+from litellm import embedding, completion, completion_cost
 
 litellm.set_verbose = False
 
@@ -57,8 +57,51 @@ def test_openai_embedding():
 # test_openai_embedding()
 
 
+def test_openai_embedding_3():
+    try:
+        litellm.set_verbose = True
+        response = embedding(
+            model="text-embedding-3-small",
+            input=["good morning from litellm", "this is another item"],
+            metadata={"anything": "good day"},
+            dimensions=5,
+        )
+        print(f"response:", response)
+        litellm_response = dict(response)
+        litellm_response_keys = set(litellm_response.keys())
+        litellm_response_keys.discard("_response_ms")
+
+        print(litellm_response_keys)
+        print("LiteLLM Response\n")
+        # print(litellm_response)
+
+        # same request with OpenAI 1.0+
+        import openai
+
+        client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=["good morning from litellm", "this is another item"],
+            dimensions=5,
+        )
+
+        response = dict(response)
+        openai_response_keys = set(response.keys())
+        print(openai_response_keys)
+        assert (
+            litellm_response_keys == openai_response_keys
+        )  # ENSURE the Keys in litellm response is exactly what the openai package returns
+        assert (
+            len(litellm_response["data"]) == 2
+        )  # expect two embedding responses from litellm_response since input had two
+        print(openai_response_keys)
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
 def test_openai_azure_embedding_simple():
     try:
+        litellm.set_verbose = True
         response = embedding(
             model="azure/azure-embedding-model",
             input=["good morning from litellm"],
@@ -69,6 +112,10 @@ def test_openai_azure_embedding_simple():
         assert set(["usage", "model", "object", "data"]) == set(
             response_keys
         )  # assert litellm response has expected keys from OpenAI embedding response
+
+        request_cost = litellm.completion_cost(completion_response=response)
+
+        print("Calculated request cost=", request_cost)
 
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
@@ -172,6 +219,11 @@ def test_cohere_embedding3():
             input=["good morning from litellm", "this is another item"],
         )
         print(f"response:", response)
+
+        custom_llm_provider = response._hidden_params["custom_llm_provider"]
+
+        assert custom_llm_provider == "cohere"
+
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 
@@ -179,15 +231,43 @@ def test_cohere_embedding3():
 # test_cohere_embedding3()
 
 
+def test_vertexai_embedding():
+    try:
+        # litellm.set_verbose=True
+        response = embedding(
+            model="textembedding-gecko@001",
+            input=["good morning from litellm", "this is another item"],
+        )
+        print(f"response:", response)
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
+@pytest.mark.asyncio
+async def test_vertexai_aembedding():
+    try:
+        # litellm.set_verbose=True
+        response = await litellm.aembedding(
+            model="textembedding-gecko@001",
+            input=["good morning from litellm", "this is another item"],
+        )
+        print(f"response: {response}")
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
 def test_bedrock_embedding_titan():
     try:
+        # this tests if we support str input for bedrock embedding
         litellm.set_verbose = True
+        litellm.enable_cache()
+        import time
+
+        current_time = str(time.time())
+        # DO NOT MAKE THE INPUT A LIST in this test
         response = embedding(
-            model="amazon.titan-embed-text-v1",
-            input=[
-                "good morning from litellm, attempting to embed data",
-                "lets test a second string for good measure",
-            ],
+            model="bedrock/amazon.titan-embed-text-v1",
+            input=f"good morning from litellm, attempting to embed data {current_time}",  # input should always be a string in this test
         )
         print(f"response:", response)
         assert isinstance(
@@ -197,6 +277,23 @@ def test_bedrock_embedding_titan():
         assert all(
             isinstance(x, float) for x in response["data"][0]["embedding"]
         ), "Expected response to be a list of floats"
+
+        # this also tests if we can return a cache response for this scenario
+        import time
+
+        start_time = time.time()
+
+        response = embedding(
+            model="bedrock/amazon.titan-embed-text-v1",
+            input=f"good morning from litellm, attempting to embed data {current_time}",  # input should always be a string in this test
+        )
+        print(response)
+
+        end_time = time.time()
+        print(f"Embedding 2 response time: {end_time - start_time} seconds")
+
+        assert end_time - start_time < 0.1
+        litellm.disable_cache()
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 
@@ -230,6 +327,25 @@ def test_bedrock_embedding_cohere():
 # test_bedrock_embedding_cohere()
 
 
+def test_demo_tokens_as_input_to_embeddings_fails_for_titan():
+    litellm.set_verbose = True
+
+    with pytest.raises(
+        litellm.BadRequestError,
+        match="BedrockException - Bedrock Embedding API input must be type str | List[str]",
+    ):
+        litellm.embedding(model="amazon.titan-embed-text-v1", input=[[1]])
+
+    with pytest.raises(
+        litellm.BadRequestError,
+        match="BedrockException - Bedrock Embedding API input must be type str | List[str]",
+    ):
+        litellm.embedding(
+            model="amazon.titan-embed-text-v1",
+            input=[1],
+        )
+
+
 # comment out hf tests - since hf endpoints are unstable
 def test_hf_embedding():
     try:
@@ -260,10 +376,17 @@ def test_aembedding():
                     input=["good morning from litellm", "this is another item"],
                 )
                 print(response)
+                return response
             except Exception as e:
                 pytest.fail(f"Error occurred: {e}")
 
-        asyncio.run(embedding_call())
+        response = asyncio.run(embedding_call())
+        print("Before caclulating cost, response", response)
+
+        cost = litellm.completion_cost(completion_response=response)
+
+        print("COST=", cost)
+        assert cost == float("1e-06")
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 
@@ -282,6 +405,12 @@ def test_aembedding_azure():
                     input=["good morning from litellm", "this is another item"],
                 )
                 print(response)
+
+                print(
+                    "hidden params - custom_llm_provider",
+                    response._hidden_params["custom_llm_provider"],
+                )
+                assert response._hidden_params["custom_llm_provider"] == "azure"
             except Exception as e:
                 pytest.fail(f"Error occurred: {e}")
 
@@ -298,8 +427,30 @@ def test_sagemaker_embeddings():
         response = litellm.embedding(
             model="sagemaker/berri-benchmarking-gpt-j-6b-fp16",
             input=["good morning from litellm", "this is another item"],
+            input_cost_per_second=0.000420,
         )
         print(f"response: {response}")
+        cost = completion_cost(completion_response=response)
+        assert (
+            cost > 0.0 and cost < 1.0
+        )  # should never be > $1 for a single embedding call
+    except Exception as e:
+        pytest.fail(f"Error occurred: {e}")
+
+
+@pytest.mark.asyncio
+async def test_sagemaker_aembeddings():
+    try:
+        response = await litellm.aembedding(
+            model="sagemaker/berri-benchmarking-gpt-j-6b-fp16",
+            input=["good morning from litellm", "this is another item"],
+            input_cost_per_second=0.000420,
+        )
+        print(f"response: {response}")
+        cost = completion_cost(completion_response=response)
+        assert (
+            cost > 0.0 and cost < 1.0
+        )  # should never be > $1 for a single embedding call
     except Exception as e:
         pytest.fail(f"Error occurred: {e}")
 
@@ -332,6 +483,17 @@ def test_voyage_embeddings():
 
 
 # test_voyage_embeddings()
+# def test_xinference_embeddings():
+#     try:
+#         litellm.set_verbose = True
+#         response = litellm.embedding(
+#             model="xinference/bge-base-en",
+#             input=["good morning from litellm"],
+#         )
+#         print(f"response: {response}")
+#     except Exception as e:
+#         pytest.fail(f"Error occurred: {e}")
+# test_xinference_embeddings()
 
 # test_sagemaker_embeddings()
 # def local_proxy_embeddings():

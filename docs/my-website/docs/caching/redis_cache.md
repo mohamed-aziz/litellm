@@ -1,18 +1,35 @@
-# Redis Cache
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
-[**See Code**](https://github.com/BerriAI/litellm/blob/4d7ff1b33b9991dcf38d821266290631d9bcd2dd/litellm/caching.py#L71)
+# Caching - In-Memory, Redis, s3,  Redis Semantic Cache
 
-### Pre-requisites
+[**See Code**](https://github.com/BerriAI/litellm/blob/main/litellm/caching.py)
+
+:::info
+
+Need to use Caching on LiteLLM Proxy Server? Doc here: [Caching Proxy Server](https://docs.litellm.ai/docs/proxy/caching)
+
+:::
+
+## Initialize Cache - In Memory, Redis, s3 Bucket, Redis Semantic Cache
+
+
+<Tabs>
+
+<TabItem value="redis" label="redis-cache">
+
 Install redis
 ```shell
 pip install redis
 ```
+
 For the hosted version you can setup your own Redis DB here: https://app.redislabs.com/
-### Quick Start
+
 ```python
 import litellm
 from litellm import completion
 from litellm.caching import Cache
+
 litellm.cache = Cache(type="redis", host=<host>, port=<port>, password=<password>)
 
 # Make completion calls
@@ -27,6 +44,138 @@ response2 = completion(
 
 # response1 == response2, response 1 is cached
 ```
+
+</TabItem>
+
+
+<TabItem value="s3" label="s3-cache">
+
+Install boto3
+```shell
+pip install boto3
+```
+
+Set AWS environment variables
+
+```shell
+AWS_ACCESS_KEY_ID = "AKI*******"
+AWS_SECRET_ACCESS_KEY = "WOl*****"
+```
+
+```python
+import litellm
+from litellm import completion
+from litellm.caching import Cache
+
+# pass s3-bucket name
+litellm.cache = Cache(type="s3", s3_bucket_name="cache-bucket-litellm", s3_region_name="us-west-2")
+
+# Make completion calls
+response1 = completion(
+    model="gpt-3.5-turbo", 
+    messages=[{"role": "user", "content": "Tell me a joke."}]
+)
+response2 = completion(
+    model="gpt-3.5-turbo", 
+    messages=[{"role": "user", "content": "Tell me a joke."}]
+)
+
+# response1 == response2, response 1 is cached
+```
+
+</TabItem>
+
+
+<TabItem value="redis-sem" label="redis-semantic cache">
+
+Install redis
+```shell
+pip install redisvl==0.0.7
+```
+
+For the hosted version you can setup your own Redis DB here: https://app.redislabs.com/
+
+```python
+import litellm
+from litellm import completion
+from litellm.caching import Cache
+
+random_number = random.randint(
+    1, 100000
+)  # add a random number to ensure it's always adding / reading from cache
+
+print("testing semantic caching")
+litellm.cache = Cache(
+    type="redis-semantic",
+    host=os.environ["REDIS_HOST"],
+    port=os.environ["REDIS_PORT"],
+    password=os.environ["REDIS_PASSWORD"],
+    similarity_threshold=0.8, # similarity threshold for cache hits, 0 == no similarity, 1 = exact matches, 0.5 == 50% similarity
+    redis_semantic_cache_embedding_model="text-embedding-ada-002", # this model is passed to litellm.embedding(), any litellm.embedding() model is supported here
+)
+response1 = completion(
+    model="gpt-3.5-turbo",
+    messages=[
+        {
+            "role": "user",
+            "content": f"write a one sentence poem about: {random_number}",
+        }
+    ],
+    max_tokens=20,
+)
+print(f"response1: {response1}")
+
+random_number = random.randint(1, 100000)
+
+response2 = completion(
+    model="gpt-3.5-turbo",
+    messages=[
+        {
+            "role": "user",
+            "content": f"write a one sentence poem about: {random_number}",
+        }
+    ],
+    max_tokens=20,
+)
+print(f"response2: {response1}")
+assert response1.id == response2.id
+# response1 == response2, response 1 is cached
+```
+
+</TabItem>
+
+
+
+<TabItem value="in-mem" label="in memory cache">
+
+### Quick Start
+
+```python
+import litellm
+from litellm import completion
+from litellm.caching import Cache
+litellm.cache = Cache()
+
+# Make completion calls
+response1 = completion(
+    model="gpt-3.5-turbo", 
+    messages=[{"role": "user", "content": "Tell me a joke."}]
+    caching=True
+)
+response2 = completion(
+    model="gpt-3.5-turbo", 
+    messages=[{"role": "user", "content": "Tell me a joke."}],
+    caching=True
+)
+
+# response1 == response2, response 1 is cached
+
+```
+
+</TabItem>
+
+
+</Tabs>
 
 ## Cache Context Manager - Enable, Disable, Update Cache
 Use the context manager for easily enabling, disabling & updating the litellm cache 
@@ -103,35 +252,35 @@ litellm.cache = cache # set litellm.cache to your cache
 
 ## Cache Initialization Parameters
 
-#### `type` (str, optional)
+```python
+def __init__(
+    self,
+    type: Optional[Literal["local", "redis", "s3"]] = "local",
+    supported_call_types: Optional[
+        List[Literal["completion", "acompletion", "embedding", "aembedding"]]
+    ] = ["completion", "acompletion", "embedding", "aembedding"], # A list of litellm call types to cache for. Defaults to caching for all litellm call types.
+    
+    # redis cache params
+    host: Optional[str] = None,
+    port: Optional[str] = None,
+    password: Optional[str] = None,
 
-The type of cache to initialize. It can be either "local" or "redis". Defaults to "local".
 
-#### `host` (str, optional)
-
-The host address for the Redis cache. This parameter is required if the `type` is set to "redis".
-
-#### `port` (int, optional)
-
-The port number for the Redis cache. This parameter is required if the `type` is set to "redis".
-
-#### `password` (str, optional)
-
-The password for the Redis cache. This parameter is required if the `type` is set to "redis".
-
-#### `supported_call_types` (list, optional)
-
-A list of call types to cache for. Defaults to caching for all call types. The available call types are:
-
-- "completion"
-- "acompletion"
-- "embedding"
-- "aembedding"
-
-#### `**kwargs` (additional keyword arguments)
-
-Additional keyword arguments are accepted for the initialization of the Redis cache using the `redis.Redis()` constructor. These arguments allow you to fine-tune the Redis cache configuration based on your specific needs.
-
+    # s3 Bucket, boto3 configuration
+    s3_bucket_name: Optional[str] = None,
+    s3_region_name: Optional[str] = None,
+    s3_api_version: Optional[str] = None,
+    s3_path: Optional[str] = None, # if you wish to save to a spefic path
+    s3_use_ssl: Optional[bool] = True,
+    s3_verify: Optional[Union[bool, str]] = None,
+    s3_endpoint_url: Optional[str] = None,
+    s3_aws_access_key_id: Optional[str] = None,
+    s3_aws_secret_access_key: Optional[str] = None,
+    s3_aws_session_token: Optional[str] = None,
+    s3_config: Optional[Any] = None,
+    **kwargs,
+):
+```
 
 ## Logging 
 

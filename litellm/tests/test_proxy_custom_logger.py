@@ -23,6 +23,7 @@ from litellm.proxy.proxy_server import (
     router,
     save_worker_config,
     initialize,
+    startup_event,
 )  # Replace with the actual module where your FastAPI router is defined
 
 filepath = os.path.dirname(os.path.abspath(__file__))
@@ -39,8 +40,8 @@ python_file_path = f"{filepath}/test_configs/custom_callbacks.py"
 def client():
     filepath = os.path.dirname(os.path.abspath(__file__))
     config_fp = f"{filepath}/test_configs/test_custom_logger.yaml"
-    initialize(config=config_fp)
     app = FastAPI()
+    asyncio.run(initialize(config=config_fp))
     app.include_router(router)  # Include your router in the test app
     return TestClient(app)
 
@@ -181,6 +182,7 @@ def test_chat_completion(client):
         print("\n\n Metadata in custom logger kwargs", litellm_params.get("metadata"))
         assert metadata is not None
         assert "user_api_key" in metadata
+        assert "user_api_key_metadata" in metadata
         assert "headers" in metadata
         config_model_info = litellm_params.get("model_info")
         proxy_server_request_object = litellm_params.get("proxy_server_request")

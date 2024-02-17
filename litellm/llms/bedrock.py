@@ -2,9 +2,9 @@ import json, copy, types
 import os
 from enum import Enum
 import time
-from typing import Callable, Optional, Any
+from typing import Callable, Optional, Any, Union, List
 import litellm
-from litellm.utils import ModelResponse, get_secret, Usage
+from litellm.utils import ModelResponse, get_secret, Usage, ImageResponse
 from .prompt_templates.factory import prompt_factory, custom_prompt
 import httpx
 
@@ -282,12 +282,83 @@ class AmazonLlamaConfig:
         }
 
 
+class AmazonStabilityConfig:
+    """
+    Reference: https://us-west-2.console.aws.amazon.com/bedrock/home?region=us-west-2#/providers?model=stability.stable-diffusion-xl-v0
+
+    Supported Params for the Amazon / Stable Diffusion models:
+
+    - `cfg_scale` (integer): Default `7`. Between [ 0 .. 35 ]. How strictly the diffusion process adheres to the prompt text (higher values keep your image closer to your prompt)
+
+    - `seed` (float): Default: `0`. Between [ 0 .. 4294967295 ]. Random noise seed (omit this option or use 0 for a random seed)
+
+    - `steps` (array of strings): Default `30`. Between [ 10 .. 50 ]. Number of diffusion steps to run.
+
+    - `width` (integer): Default: `512`. multiple of 64 >= 128. Width of the image to generate, in pixels, in an increment divible by 64.
+        Engine-specific dimension validation:
+
+        - SDXL Beta: must be between 128x128 and 512x896 (or 896x512); only one dimension can be greater than 512.
+        - SDXL v0.9: must be one of 1024x1024, 1152x896, 1216x832, 1344x768, 1536x640, 640x1536, 768x1344, 832x1216, or 896x1152
+        - SDXL v1.0: same as SDXL v0.9
+        - SD v1.6: must be between 320x320 and 1536x1536
+
+    - `height` (integer): Default: `512`. multiple of 64 >= 128. Height of the image to generate, in pixels, in an increment divible by 64.
+        Engine-specific dimension validation:
+
+        - SDXL Beta: must be between 128x128 and 512x896 (or 896x512); only one dimension can be greater than 512.
+        - SDXL v0.9: must be one of 1024x1024, 1152x896, 1216x832, 1344x768, 1536x640, 640x1536, 768x1344, 832x1216, or 896x1152
+        - SDXL v1.0: same as SDXL v0.9
+        - SD v1.6: must be between 320x320 and 1536x1536
+    """
+
+    cfg_scale: Optional[int] = None
+    seed: Optional[float] = None
+    steps: Optional[List[str]] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+    def __init__(
+        self,
+        cfg_scale: Optional[int] = None,
+        seed: Optional[float] = None,
+        steps: Optional[List[str]] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+    ) -> None:
+        locals_ = locals()
+        for key, value in locals_.items():
+            if key != "self" and value is not None:
+                setattr(self.__class__, key, value)
+
+    @classmethod
+    def get_config(cls):
+        return {
+            k: v
+            for k, v in cls.__dict__.items()
+            if not k.startswith("__")
+            and not isinstance(
+                v,
+                (
+                    types.FunctionType,
+                    types.BuiltinFunctionType,
+                    classmethod,
+                    staticmethod,
+                ),
+            )
+            and v is not None
+        }
+
+
 def init_bedrock_client(
     region_name=None,
     aws_access_key_id: Optional[str] = None,
     aws_secret_access_key: Optional[str] = None,
     aws_region_name: Optional[str] = None,
     aws_bedrock_runtime_endpoint: Optional[str] = None,
+    aws_session_name: Optional[str] = None,
+    aws_profile_name: Optional[str] = None,
+    aws_role_name: Optional[str] = None,
+    timeout: Optional[int] = None,
 ):
     # check for custom AWS_REGION_NAME and use it if not passed to init_bedrock_client
     litellm_aws_region_name = get_secret("AWS_REGION_NAME", None)
@@ -300,6 +371,9 @@ def init_bedrock_client(
         aws_secret_access_key,
         aws_region_name,
         aws_bedrock_runtime_endpoint,
+        aws_session_name,
+        aws_profile_name,
+        aws_role_name,
     ]
 
     # Iterate over parameters and update if needed
@@ -312,7 +386,12 @@ def init_bedrock_client(
         aws_secret_access_key,
         aws_region_name,
         aws_bedrock_runtime_endpoint,
+        aws_session_name,
+        aws_profile_name,
+        aws_role_name,
     ) = params_to_check
+
+    ### SET REGION NAME
     if region_name:
         pass
     elif aws_region_name:
@@ -338,7 +417,31 @@ def init_bedrock_client(
 
     import boto3
 
-    if aws_access_key_id != None:
+    config = boto3.session.Config(connect_timeout=timeout, read_timeout=timeout)
+
+    ### CHECK STS ###
+    if aws_role_name is not None and aws_session_name is not None:
+        # use sts if role name passed in
+        sts_client = boto3.client(
+            "sts",
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+        )
+
+        sts_response = sts_client.assume_role(
+            RoleArn=aws_role_name, RoleSessionName=aws_session_name
+        )
+
+        client = boto3.client(
+            service_name="bedrock-runtime",
+            aws_access_key_id=sts_response["Credentials"]["AccessKeyId"],
+            aws_secret_access_key=sts_response["Credentials"]["SecretAccessKey"],
+            aws_session_token=sts_response["Credentials"]["SessionToken"],
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            config=config,
+        )
+    elif aws_access_key_id is not None:
         # uses auth params passed to completion
         # aws_access_key_id is not None, assume user is trying to auth using litellm.completion
 
@@ -348,6 +451,16 @@ def init_bedrock_client(
             aws_secret_access_key=aws_secret_access_key,
             region_name=region_name,
             endpoint_url=endpoint_url,
+            config=config,
+        )
+    elif aws_profile_name is not None:
+        # uses auth values from AWS profile usually stored in ~/.aws/credentials
+
+        client = boto3.Session(profile_name=aws_profile_name).client(
+            service_name="bedrock-runtime",
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+            config=config,
         )
     else:
         # aws_access_key_id is None, assume user is trying to auth using env variables
@@ -357,14 +470,15 @@ def init_bedrock_client(
             service_name="bedrock-runtime",
             region_name=region_name,
             endpoint_url=endpoint_url,
+            config=config,
         )
 
     return client
 
 
 def convert_messages_to_prompt(model, messages, provider, custom_prompt_dict):
-    # handle anthropic prompts using anthropic constants
-    if provider == "anthropic":
+    # handle anthropic prompts and amazon titan prompts
+    if provider == "anthropic" or provider == "amazon":
         if model in custom_prompt_dict:
             # check if the model has a registered custom prompt
             model_prompt_details = custom_prompt_dict[model]
@@ -376,7 +490,7 @@ def convert_messages_to_prompt(model, messages, provider, custom_prompt_dict):
             )
         else:
             prompt = prompt_factory(
-                model=model, messages=messages, custom_llm_provider="anthropic"
+                model=model, messages=messages, custom_llm_provider="bedrock"
             )
     else:
         prompt = ""
@@ -412,6 +526,7 @@ def completion(
     optional_params=None,
     litellm_params=None,
     logger_fn=None,
+    timeout=None,
 ):
     exception_mapping_worked = False
     try:
@@ -419,6 +534,9 @@ def completion(
         aws_secret_access_key = optional_params.pop("aws_secret_access_key", None)
         aws_access_key_id = optional_params.pop("aws_access_key_id", None)
         aws_region_name = optional_params.pop("aws_region_name", None)
+        aws_role_name = optional_params.pop("aws_role_name", None)
+        aws_session_name = optional_params.pop("aws_session_name", None)
+        aws_profile_name = optional_params.pop("aws_profile_name", None)
         aws_bedrock_runtime_endpoint = optional_params.pop(
             "aws_bedrock_runtime_endpoint", None
         )
@@ -433,9 +551,16 @@ def completion(
                 aws_secret_access_key=aws_secret_access_key,
                 aws_region_name=aws_region_name,
                 aws_bedrock_runtime_endpoint=aws_bedrock_runtime_endpoint,
+                aws_role_name=aws_role_name,
+                aws_session_name=aws_session_name,
+                aws_profile_name=aws_profile_name,
+                timeout=timeout,
             )
 
         model = model
+        modelId = (
+            optional_params.pop("model_id", None) or model
+        )  # default to model if not passed
         provider = model.split(".")[0]
         prompt = convert_messages_to_prompt(
             model, messages, provider, custom_prompt_dict
@@ -499,6 +624,9 @@ def completion(
                 }
             )
 
+        else:
+            data = json.dumps({})
+
         ## COMPLETION CALL
         accept = "application/json"
         contentType = "application/json"
@@ -508,7 +636,7 @@ def completion(
                 request_str = f"""
                 response = client.invoke_model(
                     body={data},
-                    modelId={model},
+                    modelId={modelId},
                     accept=accept,
                     contentType=contentType
                 )
@@ -523,7 +651,7 @@ def completion(
                 )
 
                 response = client.invoke_model(
-                    body=data, modelId=model, accept=accept, contentType=contentType
+                    body=data, modelId=modelId, accept=accept, contentType=contentType
                 )
 
                 response = response.get("body").read()
@@ -533,7 +661,7 @@ def completion(
                 request_str = f"""
                 response = client.invoke_model_with_response_stream(
                     body={data},
-                    modelId={model},
+                    modelId={modelId},
                     accept=accept,
                     contentType=contentType
                 )
@@ -548,7 +676,7 @@ def completion(
                 )
 
                 response = client.invoke_model_with_response_stream(
-                    body=data, modelId=model, accept=accept, contentType=contentType
+                    body=data, modelId=modelId, accept=accept, contentType=contentType
                 )
                 response = response.get("body")
                 return response
@@ -557,7 +685,7 @@ def completion(
             request_str = f"""
             response = client.invoke_model(
                 body={data},
-                modelId={model},
+                modelId={modelId},
                 accept=accept,
                 contentType=contentType
             )
@@ -571,8 +699,12 @@ def completion(
                 },
             )
             response = client.invoke_model(
-                body=data, modelId=model, accept=accept, contentType=contentType
+                body=data, modelId=modelId, accept=accept, contentType=contentType
             )
+        except client.exceptions.ValidationException as e:
+            if "The provided model identifier is invalid" in str(e):
+                raise BedrockError(status_code=404, message=str(e))
+            raise BedrockError(status_code=400, message=str(e))
         except Exception as e:
             raise BedrockError(status_code=500, message=str(e))
 
@@ -610,6 +742,8 @@ def completion(
             try:
                 if len(outputText) > 0:
                     model_response["choices"][0]["message"]["content"] = outputText
+                else:
+                    raise Exception()
             except:
                 raise BedrockError(
                     message=json.dumps(outputText),
@@ -617,9 +751,16 @@ def completion(
                 )
 
         ## CALCULATING USAGE - baseten charges on time, not tokens - have some mapping of cost here.
-        prompt_tokens = len(encoding.encode(prompt))
-        completion_tokens = len(
-            encoding.encode(model_response["choices"][0]["message"].get("content", ""))
+        prompt_tokens = response_metadata.get(
+            "x-amzn-bedrock-input-token-count", len(encoding.encode(prompt))
+        )
+        completion_tokens = response_metadata.get(
+            "x-amzn-bedrock-output-token-count",
+            len(
+                encoding.encode(
+                    model_response["choices"][0]["message"].get("content", "")
+                )
+            ),
         )
 
         model_response["created"] = int(time.time())
@@ -630,6 +771,8 @@ def completion(
             total_tokens=prompt_tokens + completion_tokens,
         )
         model_response.usage = usage
+        model_response._hidden_params["region_name"] = client.meta.region_name
+        print_verbose(f"model_response._hidden_params: {model_response._hidden_params}")
         return model_response
     except BedrockError as e:
         exception_mapping_worked = True
@@ -651,6 +794,11 @@ def _embedding_func_single(
     encoding=None,
     logging_obj=None,
 ):
+    if isinstance(input, str) is False:
+        raise BedrockError(
+            message="Bedrock Embedding API input must be type str | List[str]",
+            status_code=400,
+        )
     # logic for parsing in - calling - parsing out model embedding calls
     ## FORMAT EMBEDDING INPUT ##
     provider = model.split(".")[0]
@@ -658,6 +806,9 @@ def _embedding_func_single(
     inference_params.pop(
         "user", None
     )  # make sure user is not passed in for bedrock call
+    modelId = (
+        optional_params.pop("model_id", None) or model
+    )  # default to model if not passed
     if provider == "amazon":
         input = input.replace(os.linesep, " ")
         data = {"inputText": input, **inference_params}
@@ -672,7 +823,7 @@ def _embedding_func_single(
     request_str = f"""
     response = client.invoke_model(
         body={body},
-        modelId={model},
+        modelId={modelId},
         accept="*/*",
         contentType="application/json",
     )"""  # type: ignore
@@ -680,14 +831,14 @@ def _embedding_func_single(
         input=input,
         api_key="",  # boto3 is used for init.
         additional_args={
-            "complete_input_dict": {"model": model, "texts": input},
+            "complete_input_dict": {"model": modelId, "texts": input},
             "request_str": request_str,
         },
     )
     try:
         response = client.invoke_model(
             body=body,
-            modelId=model,
+            modelId=modelId,
             accept="*/*",
             contentType="application/json",
         )
@@ -714,7 +865,7 @@ def _embedding_func_single(
 
 def embedding(
     model: str,
-    input: list,
+    input: Union[list, str],
     api_key: Optional[str] = None,
     logging_obj=None,
     model_response=None,
@@ -726,6 +877,8 @@ def embedding(
     aws_secret_access_key = optional_params.pop("aws_secret_access_key", None)
     aws_access_key_id = optional_params.pop("aws_access_key_id", None)
     aws_region_name = optional_params.pop("aws_region_name", None)
+    aws_role_name = optional_params.pop("aws_role_name", None)
+    aws_session_name = optional_params.pop("aws_session_name", None)
     aws_bedrock_runtime_endpoint = optional_params.pop(
         "aws_bedrock_runtime_endpoint", None
     )
@@ -736,19 +889,38 @@ def embedding(
         aws_secret_access_key=aws_secret_access_key,
         aws_region_name=aws_region_name,
         aws_bedrock_runtime_endpoint=aws_bedrock_runtime_endpoint,
+        aws_role_name=aws_role_name,
+        aws_session_name=aws_session_name,
     )
-
-    ## Embedding Call
-    embeddings = [
-        _embedding_func_single(
-            model,
-            i,
-            optional_params=optional_params,
-            client=client,
-            logging_obj=logging_obj,
+    if isinstance(input, str):
+        ## Embedding Call
+        embeddings = [
+            _embedding_func_single(
+                model,
+                input,
+                optional_params=optional_params,
+                client=client,
+                logging_obj=logging_obj,
+            )
+        ]
+    elif isinstance(input, list):
+        ## Embedding Call - assuming this is a List[str]
+        embeddings = [
+            _embedding_func_single(
+                model,
+                i,
+                optional_params=optional_params,
+                client=client,
+                logging_obj=logging_obj,
+            )
+            for i in input
+        ]  # [TODO]: make these parallel calls
+    else:
+        # enters this branch if input = int, ex. input=2
+        raise BedrockError(
+            message="Bedrock Embedding API input must be type str | List[str]",
+            status_code=400,
         )
-        for i in input
-    ]  # [TODO]: make these parallel calls
 
     ## Populate OpenAI compliant dictionary
     embedding_response = []
@@ -774,4 +946,113 @@ def embedding(
     )
     model_response.usage = usage
 
+    return model_response
+
+
+def image_generation(
+    model: str,
+    prompt: str,
+    timeout=None,
+    logging_obj=None,
+    model_response=None,
+    optional_params=None,
+    aimg_generation=False,
+):
+    """
+    Bedrock Image Gen endpoint support
+    """
+    ### BOTO3 INIT ###
+    # pop aws_secret_access_key, aws_access_key_id, aws_region_name from kwargs, since completion calls fail with them
+    aws_secret_access_key = optional_params.pop("aws_secret_access_key", None)
+    aws_access_key_id = optional_params.pop("aws_access_key_id", None)
+    aws_region_name = optional_params.pop("aws_region_name", None)
+    aws_role_name = optional_params.pop("aws_role_name", None)
+    aws_session_name = optional_params.pop("aws_session_name", None)
+    aws_bedrock_runtime_endpoint = optional_params.pop(
+        "aws_bedrock_runtime_endpoint", None
+    )
+
+    # use passed in BedrockRuntime.Client if provided, otherwise create a new one
+    client = init_bedrock_client(
+        aws_access_key_id=aws_access_key_id,
+        aws_secret_access_key=aws_secret_access_key,
+        aws_region_name=aws_region_name,
+        aws_bedrock_runtime_endpoint=aws_bedrock_runtime_endpoint,
+        aws_role_name=aws_role_name,
+        aws_session_name=aws_session_name,
+        timeout=timeout,
+    )
+
+    ### FORMAT IMAGE GENERATION INPUT ###
+    modelId = model
+    provider = model.split(".")[0]
+    inference_params = copy.deepcopy(optional_params)
+    inference_params.pop(
+        "user", None
+    )  # make sure user is not passed in for bedrock call
+    data = {}
+    if provider == "stability":
+        prompt = prompt.replace(os.linesep, " ")
+        ## LOAD CONFIG
+        config = litellm.AmazonStabilityConfig.get_config()
+        for k, v in config.items():
+            if (
+                k not in inference_params
+            ):  # completion(top_k=3) > anthropic_config(top_k=3) <- allows for dynamic variables to be passed in
+                inference_params[k] = v
+        data = {"text_prompts": [{"text": prompt, "weight": 1}], **inference_params}
+    else:
+        raise BedrockError(
+            status_code=422, message=f"Unsupported model={model}, passed in"
+        )
+
+    body = json.dumps(data).encode("utf-8")
+    ## LOGGING
+    request_str = f"""
+    response = client.invoke_model(
+        body={body},
+        modelId={modelId},
+        accept="application/json",
+        contentType="application/json",
+    )"""  # type: ignore
+    logging_obj.pre_call(
+        input=prompt,
+        api_key="",  # boto3 is used for init.
+        additional_args={
+            "complete_input_dict": {"model": modelId, "texts": prompt},
+            "request_str": request_str,
+        },
+    )
+    try:
+        response = client.invoke_model(
+            body=body,
+            modelId=modelId,
+            accept="application/json",
+            contentType="application/json",
+        )
+        response_body = json.loads(response.get("body").read())
+        ## LOGGING
+        logging_obj.post_call(
+            input=prompt,
+            api_key="",
+            additional_args={"complete_input_dict": data},
+            original_response=json.dumps(response_body),
+        )
+    except Exception as e:
+        raise BedrockError(
+            message=f"Embedding Error with model {model}: {e}", status_code=500
+        )
+
+    ### FORMAT RESPONSE TO OPENAI FORMAT ###
+    if response_body is None:
+        raise Exception("Error in response object format")
+
+    if model_response is None:
+        model_response = ImageResponse()
+
+    image_list: List = []
+    for artifact in response_body["artifacts"]:
+        image_dict = {"url": artifact["base64"]}
+
+    model_response.data = image_dict
     return model_response

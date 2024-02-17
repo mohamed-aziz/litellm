@@ -21,8 +21,10 @@ from openai import (
     APIConnectionError,
     APIResponseValidationError,
     UnprocessableEntityError,
+    PermissionDeniedError,
 )
 import httpx
+from typing import Optional
 
 
 class AuthenticationError(AuthenticationError):  # type: ignore
@@ -49,11 +51,19 @@ class NotFoundError(NotFoundError):  # type: ignore
 
 
 class BadRequestError(BadRequestError):  # type: ignore
-    def __init__(self, message, model, llm_provider, response: httpx.Response):
+    def __init__(
+        self, message, model, llm_provider, response: Optional[httpx.Response] = None
+    ):
         self.status_code = 400
         self.message = message
         self.model = model
         self.llm_provider = llm_provider
+        response = response or httpx.Response(
+            status_code=self.status_code,
+            request=httpx.Request(
+                method="GET", url="https://litellm.ai"
+            ),  # mock request object
+        )
         super().__init__(
             self.message, response=response, body=None
         )  # Call the base class constructor with the parameters it needs
@@ -82,6 +92,17 @@ class Timeout(APITimeoutError):  # type: ignore
         )  # Call the base class constructor with the parameters it needs
 
 
+class PermissionDeniedError(PermissionDeniedError):  # type:ignore
+    def __init__(self, message, llm_provider, model, response: httpx.Response):
+        self.status_code = 403
+        self.message = message
+        self.llm_provider = llm_provider
+        self.model = model
+        super().__init__(
+            self.message, response=response, body=None
+        )  # Call the base class constructor with the parameters it needs
+
+
 class RateLimitError(RateLimitError):  # type: ignore
     def __init__(self, message, llm_provider, model, response: httpx.Response):
         self.status_code = 429
@@ -95,6 +116,21 @@ class RateLimitError(RateLimitError):  # type: ignore
 
 # sub class of rate limit error - meant to give more granularity for error handling context window exceeded errors
 class ContextWindowExceededError(BadRequestError):  # type: ignore
+    def __init__(self, message, model, llm_provider, response: httpx.Response):
+        self.status_code = 400
+        self.message = message
+        self.model = model
+        self.llm_provider = llm_provider
+        super().__init__(
+            message=self.message,
+            model=self.model,  # type: ignore
+            llm_provider=self.llm_provider,  # type: ignore
+            response=response,
+        )  # Call the base class constructor with the parameters it needs
+
+
+class ContentPolicyViolationError(BadRequestError):  # type: ignore
+    #  Error code: 400 - {'error': {'code': 'content_policy_violation', 'message': 'Your request was rejected as a result of our safety system. Image descriptions generated from your prompt may contain text that is not allowed by our safety system. If you believe this was done in error, your request may succeed if retried, or by adjusting your prompt.', 'param': None, 'type': 'invalid_request_error'}}
     def __init__(self, message, model, llm_provider, response: httpx.Response):
         self.status_code = 400
         self.message = message

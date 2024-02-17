@@ -456,8 +456,13 @@ async def test_aimg_gen_on_router():
 
         router.reset()
     except Exception as e:
-        traceback.print_exc()
-        pytest.fail(f"Error occurred: {e}")
+        if "Your task failed as a result of our safety system." in str(e):
+            pass
+        elif "Operation polling timed out" in str(e):
+            pass
+        else:
+            traceback.print_exc()
+            pytest.fail(f"Error occurred: {e}")
 
 
 # asyncio.run(test_aimg_gen_on_router())
@@ -490,6 +495,8 @@ def test_img_gen_on_router():
         print(response)
         assert len(response.data) > 0
         router.reset()
+    except litellm.RateLimitError as e:
+        pass
     except Exception as e:
         traceback.print_exc()
         pytest.fail(f"Error occurred: {e}")
@@ -530,8 +537,13 @@ def test_aembedding_on_router():
         )
         router.reset()
     except Exception as e:
-        traceback.print_exc()
-        pytest.fail(f"Error occurred: {e}")
+        if "Your task failed as a result of our safety system." in str(e):
+            pass
+        elif "Operation polling timed out" in str(e):
+            pass
+        else:
+            traceback.print_exc()
+            pytest.fail(f"Error occurred: {e}")
 
 
 # test_aembedding_on_router()
@@ -930,3 +942,72 @@ def test_reading_openai_keys_os_environ():
 
 
 # test_reading_openai_keys_os_environ()
+
+
+def test_router_anthropic_key_dynamic():
+    anthropic_api_key = os.environ.pop("ANTHROPIC_API_KEY")
+    model_list = [
+        {
+            "model_name": "anthropic-claude",
+            "litellm_params": {
+                "model": "claude-instant-1",
+                "api_key": anthropic_api_key,
+            },
+        }
+    ]
+
+    router = Router(model_list=model_list)
+    messages = [{"role": "user", "content": "Hey, how's it going?"}]
+    router.completion(model="anthropic-claude", messages=messages)
+    os.environ["ANTHROPIC_API_KEY"] = anthropic_api_key
+
+
+def test_router_timeout():
+    litellm.set_verbose = True
+    from litellm._logging import verbose_logger
+    import logging
+
+    verbose_logger.setLevel(logging.DEBUG)
+    model_list = [
+        {
+            "model_name": "gpt-3.5-turbo",
+            "litellm_params": {
+                "model": "gpt-3.5-turbo",
+                "api_key": "os.environ/OPENAI_API_KEY",
+            },
+        }
+    ]
+    router = Router(model_list=model_list)
+    messages = [{"role": "user", "content": "Hey, how's it going?"}]
+    start_time = time.time()
+    try:
+        res = router.completion(
+            model="gpt-3.5-turbo", messages=messages, timeout=0.0001
+        )
+        print(res)
+        pytest.fail("this should have timed out")
+    except litellm.exceptions.Timeout as e:
+        print("got timeout exception")
+        print(e)
+        print(vars(e))
+        pass
+
+
+@pytest.mark.asyncio
+async def test_router_amoderation():
+    model_list = [
+        {
+            "model_name": "openai-moderations",
+            "litellm_params": {
+                "model": "text-moderation-stable",
+                "api_key": os.getenv("OPENAI_API_KEY", None),
+            },
+        }
+    ]
+
+    router = Router(model_list=model_list)
+    result = await router.amoderation(
+        model="openai-moderations", input="this is valid good text"
+    )
+
+    print("moderation result", result)

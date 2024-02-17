@@ -3,7 +3,6 @@ ARG LITELLM_BUILD_IMAGE=python:3.9
 
 # Runtime image
 ARG LITELLM_RUNTIME_IMAGE=python:3.9-slim
-
 # Builder stage
 FROM $LITELLM_BUILD_IMAGE as builder
 
@@ -33,10 +32,16 @@ RUN pip install dist/*.whl
 # install dependencies as wheels
 RUN pip wheel --no-cache-dir --wheel-dir=/wheels/ -r requirements.txt
 
+# install semantic-cache [Experimental]- we need this here and not in requirements.txt because redisvl pins to pydantic 1.0 
+RUN pip install redisvl==0.0.7 --no-deps
+
 # Runtime stage
 FROM $LITELLM_RUNTIME_IMAGE as runtime
 
 WORKDIR /app
+# Copy the current directory contents into the container at /app
+COPY . .
+RUN ls -la /app
 
 # Copy the built wheel from the builder stage to the runtime stage; assumes only one wheel file is present
 COPY --from=builder /app/dist/*.whl .
@@ -45,9 +50,9 @@ COPY --from=builder /wheels/ /wheels/
 # Install the built wheel using pip; again using a wildcard if it's the only file
 RUN pip install *.whl /wheels/* --no-index --find-links=/wheels/ && rm -f *.whl && rm -rf /wheels
 
+RUN chmod +x entrypoint.sh
 
 EXPOSE 4000/tcp
 
-# Set your entrypoint and command
 ENTRYPOINT ["litellm"]
-CMD ["--port", "4000"]
+CMD ["--port", "4000", "--config", "./proxy_server_config.yaml", "--detailed_debug", "--run_gunicorn"]
